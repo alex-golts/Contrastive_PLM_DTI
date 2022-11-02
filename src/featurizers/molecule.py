@@ -3,7 +3,6 @@ import dgl
 import math
 import torch
 import pysmiles
-import deepchem as dc
 import numpy as np
 
 from rdkit import Chem, DataStructs
