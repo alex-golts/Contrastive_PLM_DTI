@@ -16,6 +16,8 @@ import torchmetrics
 from argparse import ArgumentParser
 
 import wandb
+from clearml import Task
+from torch.utils.tensorboard import SummaryWriter
 from omegaconf import OmegaConf
 from pathlib import Path
 
@@ -345,6 +347,13 @@ def main():
             "test/auroc": torchmetrics.AUROC,
         }
 
+    # Initialize clearml
+    do_clearml = "clearml_proj" in config
+    if do_clearml:
+        task = Task.init(project_name=config.clearml_proj, task_name=config.clearml_task)
+        # we use tensorboard for logging, so then it's viewable in either tensorboard or clearml
+        writer = SummaryWriter() 
+
     # Initialize wandb
     do_wandb = "wandb_proj" in config
     if do_wandb:
@@ -375,13 +384,12 @@ def main():
             pred, label = step(model, batch, device)
 
             loss = loss_fct(pred, label)
-
+            step_num = (epo * len(training_generator) * config.batch_size) + \
+                        (i * config.batch_size)
+            writer.add_scalar("train loss vs. iter", loss, step_num)
             wandb_log(
                 {
-                    "train/step": (
-                        epo * len(training_generator) * config.batch_size
-                    )
-                    + (i * config.batch_size),
+                    "train/step": step_num,
                     "train/loss": loss,
                 },
                 do_wandb,
@@ -392,7 +400,7 @@ def main():
             opt.step()
 
         lr_scheduler.step()
-
+        writer.add_scalar("train lr vs. epoch", lr_scheduler.get_lr()[0], epo)
         wandb_log(
             {
                 "epoch": epo,
@@ -420,15 +428,12 @@ def main():
                 contrastive_loss = contrastive_loss_fct(
                     anchor, positive, negative
                 )
-
+                c_step_num = (epo * len(training_generator) * config.contrastive_batch_size) \
+                             + (i * config.contrastive_batch_size)
+                writer.add_scalar("train contrastive loss vs. iter", contrastive_loss, c_step_num)
                 wandb_log(
                     {
-                        "train/c_step": (
-                            epo
-                            * len(training_generator)
-                            * config.contrastive_batch_size
-                        )
-                        + (i * config.contrastive_batch_size),
+                        "train/c_step": c_step_num,
                         "train/c_loss": contrastive_loss,
                     },
                     do_wandb,
@@ -440,7 +445,9 @@ def main():
 
             contrastive_loss_fct.step()
             lr_scheduler_contrastive.step()
-
+            
+            writer.add_scalar("train contrastive (vs. epoch)/triplet_margin", contrastive_loss_fct.margin, epo)
+            writer.add_scalar("train contrastive (vs. epoch)/lr", lr_scheduler_contrastive.get_lr(), epo)
             wandb_log(
                 {
                     "epoch": epo,
@@ -478,6 +485,9 @@ def main():
                 val_results["Charts/epoch_time"] = (
                     epoch_time_end - epoch_time_start
                 ) / config.every_n_val
+                writer.add_scalar("validation (vs. epoch)/aupr", val_results['val/aupr'].item(), val_results['epoch'])
+                writer.add_scalar("validation (vs. epoch)/auroc", val_results['val/auroc'].item(), val_results['epoch'])
+                writer.add_scalar("Charts (vs. epoch)/epoch_time", val_results['Charts/epoch_time'], val_results['epoch'])
 
                 wandb_log(val_results, do_wandb)
 
@@ -529,6 +539,9 @@ def main():
             test_results["epoch"] = epo + 1
             test_results["test/eval_time"] = test_end_time - test_start_time
             test_results["Charts/wall_clock_time"] = end_time - start_time
+            writer.add_scalar("test (vs. epoch)/aupr", test_results['test/aupr'].item(), test_results['epoch'])
+            writer.add_scalar("test (vs. epoch)/auroc", test_results['test/auroc'].item(), test_results['epoch'])
+            writer.add_scalar("Charts (vs. epoch)/wall_clock_time", test_results['Charts/wall_clock_time'], test_results['epoch'])
             wandb_log(test_results, do_wandb)
 
             logg.info("Final Testing")
